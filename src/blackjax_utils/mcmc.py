@@ -64,24 +64,22 @@ def run_warmup(
 
 def inference_loop(
     key: PRNGKeyArray,
+    tuned_params: dict[str, Any],
     initial_state: PyTree,
-    params: Dict[str, Any],
-    target_logdensity: Callable,
     num_samples: int,
+    log_posterior: Callable,
 ) -> Tuple[PyTree, PyTree]:
-    """Run the NUTS sampling loop.
+    """Run a sampling loop.
 
     Args:
         key: A JAX PRNG key.
-        initial_state: The starting state for the chain.
-        params: Tuned NUTS parameters (e.g., step_size, inverse_mass_matrix).
-        target_logdensity: The log-density function.
+        kernel: a blackjax kernel function
         num_samples: Number of samples to draw.
 
     Returns:
         A tuple containing the tree of samples and the sampling info/diagnostics.
     """
-    kernel = blackjax.nuts(target_logdensity, **params).step
+    kernel = blackjax.nuts(log_posterior, **tuned_params).step
 
     @jax.jit
     def one_step(state: Any, rng_key: PRNGKeyArray) -> Tuple[Any, Tuple[Any, Any]]:
@@ -92,31 +90,6 @@ def inference_loop(
     _, (states, info) = jax.lax.scan(one_step, initial_state, keys)
 
     return states, info
-
-
-def get_kernel(tuned_params: Dict[str, Any], target_density: Callable) -> Callable:
-    """Create a NUTS kernel step function from tuned parameters.
-
-    Args:
-        tuned_params: NUTS parameters returned by warmup.
-        target_density: The log-density function.
-
-    Returns:
-        The NUTS kernel step function.
-    """
-    return blackjax.nuts(target_density, **tuned_params).step
-
-
-inference_loop_pmap = jax.pmap(
-    inference_loop,
-    in_axes=(0, 0, 0, None, None),
-    static_broadcasted_argnums=(3, 4),
-)
-get_kernel_pmap = jax.pmap(
-    get_kernel,
-    in_axes=(0,),
-    static_broadcasted_argnums=(1,),
-)
 
 
 def run_nuts(
@@ -150,40 +123,26 @@ def run_nuts(
     Returns:
         A tuple containing the posterior samples and sampling diagnostics (info).
     """
-    if jax.local_device_count() >= n_chain:
-        warmup_func = jax.pmap(
-            partial(run_warmup, warmup_kwargs=warmup_kwargs),
-            in_axes=(0, 0, None, None),
-            static_broadcasted_argnums=(2, 3),
-        )
-        sample_func = inference_loop_pmap
-    else:
-        warmup_func = jax.vmap(
-            partial(run_warmup, warmup_kwargs=warmup_kwargs),
-            in_axes=(0, 0, None, None),
-        )
-        sample_func = jax.vmap(
-            inference_loop,
-            in_axes=(0, 0, 0, None, None),
-        )
-
+    inference_loop_concrete = partial(
+        inference_loop,
+        num_samples=n_sample,
+        log_posterior=log_posterior,
+    )
+    run_warmup_concrete = partial(
+        run_warmup,
+        target_density=log_posterior,
+        draws=n_warmup,
+        warmup_kwargs=warmup_kwargs,
+    )
+    map_func = jax.pmap if jax.local_device_count() >= n_chain else jax.vmap
+    warmup_func = map_func(run_warmup_concrete, in_axes=(0, 0))
+    sample_func = map_func(inference_loop_concrete, in_axes=(0, 0, 0))
     sample_key, warmup_key, init_key = jax.random.split(key, 3)
     warmup_keys = jax.random.split(warmup_key, n_chain)
     sample_keys = jax.random.split(sample_key, n_chain)
     init_keys = jax.random.split(init_key, n_chain)
     get_init_params_vmap = jax.vmap(get_init_params, in_axes=(0, None, None))
     init_params = get_init_params_vmap(init_keys, init_params, init_sd)
-    initial_states, tuned_params = warmup_func(
-        warmup_keys,
-        init_params,
-        log_posterior,
-        n_warmup,
-    )
-    states, info = sample_func(
-        sample_keys,
-        initial_states,
-        tuned_params,
-        log_posterior,
-        n_sample,
-    )
+    initial_states, tuned_params = warmup_func(warmup_keys, init_params)
+    states, info = sample_func(sample_keys, tuned_params, initial_states)
     return states, info
