@@ -1,0 +1,26 @@
+[project]
+name = "blackjax-utils"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Teddy Groves", email = "groves.teddy@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "blackjax>=1.3",
+    "ipython>=9.9.0",
+    "jaxtyping>=0.3.5",
+]
+
+[project.scripts]
+blackjax-utils = "blackjax_utils:main"
+
+[build-system]
+requires = ["uv_build>=0.9.5,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
