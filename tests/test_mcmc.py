@@ -54,6 +54,7 @@ def test_run_nuts_pmap():
         n_chain=n_chain,
         n_warmup=200,
         n_sample=1000,
+        max_num_doublings=5,
     )
 
     samples = states.position["x"]
@@ -85,6 +86,7 @@ def test_run_nuts_vmap():
         n_chain=n_chain,
         n_warmup=200,
         n_sample=1000,
+        max_num_doublings=5,
     )
 
     samples = states.position["x"]
