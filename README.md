@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 
-Teddy's functions for running MCMC with [Blackjax](https://blackjax-devs.github.io/blackjax/).
+Functions for running MCMC with [Blackjax](https://blackjax-devs.github.io/blackjax/).
 
 The main aim is to provide a simple interface for running the NUTS sampler with blackJAX, much like Stan, PyMC or numpyro.
 
