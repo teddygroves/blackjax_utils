@@ -79,6 +79,7 @@ def run_chain(
     warmup_kwargs: dict[str, Any],
     n_warmup: int,
     n_sample: int,
+    **sample_kwargs: Any,
 ) -> tuple[PyTree, PyTree]:
     """Run warmup and sampling for a single chain.
 
@@ -92,6 +93,8 @@ def run_chain(
         warmup_kwargs: Additional arguments passed to `blackjax.window_adaptation`.
         n_warmup: Number of warmup (adaptation) steps.
         n_sample: Number of sampling steps.
+        **sample_kwargs: Static parameters passed to the NUTS kernel during
+            sampling (e.g., max_num_doublings).
 
     Returns:
         A tuple containing (states, info) where states is the tree of samples
@@ -112,7 +115,7 @@ def run_chain(
         inference_loop,
         num_samples=n_sample,
         log_posterior=target_density,
-        **tuned_params,
+        **sample_kwargs,
     )
     return sample_loop(sample_key, tuned_params, warmed_up_state)
 
@@ -125,34 +128,55 @@ def run_nuts(
     n_chain: int = 4,
     n_warmup: int = 500,
     n_sample: int = 500,
-    **warmup_kwargs: Any,
+    chain_map: Callable = jax.vmap,
+    sampling_options: dict[str, Any] | None = None,
+    **kwargs: Any,
 ) -> tuple[PyTree, PyTree]:
-    """Run NUTS sampling with automatic parallelization across multiple chains.
+    """Run NUTS sampling with parallelization across multiple chains.
 
     This function coordinates the full MCMC workflow: initialization, warmup
-    (adaptation), and sampling. It automatically chooses between `jax.pmap`
-    (multi-device parallelism) and `jax.vmap` (vectorization on a single device)
-    based on the number of available devices and the requested number of chains.
+    (adaptation), and sampling. Chain parallelism is controlled by the
+    ``chain_map`` argument.
 
     Args:
         key: A JAX PRNG key.
         log_posterior: The log-probability density function of the target distribution.
-        init_params: Initial values for the parameters. Will be jittered by `init_sd`.
+        init_params: Initial values for the parameters. Will be jittered by ``init_sd``.
         init_sd: Standard deviation for jittering the initial parameters. If None,
-            start exactly at `init_params`.
+            start exactly at ``init_params``.
         n_chain: Number of MCMC chains to run.
         n_warmup: Number of warmup (adaptation) steps per chain.
         n_sample: Number of sampling steps per chain.
-        **warmup_kwargs: Additional keyword arguments passed to `blackjax.window_adaptation`,
-            such as `max_num_doublings`, `is_mass_matrix_diagonal`, etc.
+        chain_map: A callable with the same interface as ``jax.vmap`` / ``jax.pmap``
+            (i.e. ``chain_map(func, in_axes=...)`` returns a vectorized function).
+            Defaults to ``jax.vmap`` for single-device vectorization. Pass
+            ``jax.pmap`` for multi-device SPMD parallelism, or a
+            ``jax.experimental.shard_map.shard_map`` partial for explicit
+            sharding control.
+        sampling_options: Optional dictionary of keyword arguments forwarded
+            to the NUTS kernel during sampling. When provided, these values
+            override the corresponding ``**kwargs`` for the sampling stage
+            only. Warmup still uses the original ``**kwargs`` values.
+        **kwargs: Additional keyword arguments forwarded to both
+            ``blackjax.window_adaptation`` (warmup) and the NUTS kernel
+            (sampling). Use ``sampling_options`` to override sampling-specific
+            values.
 
     Returns:
         A tuple containing (states, info) where:
         - states: Tree of posterior samples with shape (n_chain, n_sample, ...)
         - info: Dictionary with sampling diagnostics (e.g., divergence info)
     """
-    map_func = jax.pmap if jax.local_device_count() >= n_chain else jax.vmap
-    sample_keys, init_keys = jax.random.split(key, (2, n_chain))
+    # All kwargs go to both warmup and sampling by default.
+    # sampling_options overrides kwargs for the sampling stage only.
+    warmup_kwargs: dict[str, Any] = dict(kwargs)
+    sample_kwargs: dict[str, Any] = dict(kwargs)
+    if sampling_options is not None:
+        sample_kwargs.update(sampling_options)
+
+    key1, key2 = jax.random.split(key)
+    init_keys = jax.random.split(key1, n_chain)
+    sample_keys = jax.random.split(key2, n_chain)
     get_init_params_vmap = jax.vmap(get_init_params, in_axes=(0, None, None))
     init_params = get_init_params_vmap(init_keys, init_params, init_sd)
     run_this_chain = partial(
@@ -161,6 +185,7 @@ def run_nuts(
         warmup_kwargs=warmup_kwargs,
         n_warmup=n_warmup,
         n_sample=n_sample,
+        **sample_kwargs,
     )
-    run_these_chains = map_func(run_this_chain, in_axes=(0, 0))
+    run_these_chains = chain_map(run_this_chain, in_axes=(0, 0))
     return run_these_chains(sample_keys, init_params)
